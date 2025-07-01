@@ -89,3 +89,24 @@ The service will now be running in the cloud, securely authenticating with the a
     -   If `<path>` is a file, serves the raw content of the file.
     -   If `<path>` is a directory, returns a JSON array of its contents.
     -   Path traversal (`../`) is blocked for security.
+
+```bash
+# Given the Drive Folder structure
+# |- a
+# |- c
+# |- Gagi
+#   |- b
+#   |- new-a
+
+# Root URL returns the contents of the synced directory
+$ gcurl https://<>.run.app/
+["Gagi/","a","c"]
+
+# Pass the name of a directory to see it's contents
+$ gcurl https://run-drive-1000276527499.us-east1.run.app/Gagi
+["b","new-a"]
+
+# Pass the name of a file to see it's contents
+$ gcurl https://run-drive-1000276527499.us-east1.run.app/Gagi/new-a
+a
+```
