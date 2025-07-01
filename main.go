@@ -17,7 +17,7 @@ import (
 func main() {
 	// Define command-line flags
 	folderName := flag.String("folder-name", "agents", "Name of the folder to search within (required)")
-	secondsAgo := flag.Int("seconds-ago", 60, "On the first run, list files modified in the last N seconds. If 0, all files are synced.")
+	secondsAgo := flag.Int("seconds-ago", 0, "On the first run, list files modified in the last N seconds. If 0, all files are synced.")
 	flag.Parse()
 
 	if *folderName == "" {

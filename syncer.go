@@ -56,52 +56,65 @@ func startSyncLoop(ctx context.Context, folderName string, secondsAgo int) {
 	}
 }
 
-// performSync handles one complete sync cycle.
+// performSync starts the synchronization process.
 func performSync(ctx context.Context, driveService *drive.Service, folderName string, since time.Time) (time.Time, error) {
 	currentTime := time.Now()
-	var queryParts []string
 
 	folderID, err := getFolderID(ctx, driveService, folderName)
 	if err != nil {
 		return currentTime, fmt.Errorf("error finding folder: %w", err)
 	}
-	queryParts = append(queryParts, fmt.Sprintf("'%s' in parents", folderID))
 
-	if !since.IsZero() {
-		rfc3339Timestamp := since.Format(time.RFC3339)
-		queryParts = append(queryParts, fmt.Sprintf("modifiedTime > '%s'", rfc3339Timestamp))
+	fmt.Printf("Starting recursive sync for folder '%s'...\n", folderName)
+	err = syncFolderRecursively(ctx, driveService, folderID, downloadDir, since)
+	if err != nil {
+		return currentTime, fmt.Errorf("recursive sync failed: %w", err)
 	}
 
-	query := strings.Join(queryParts, " and ")
+	return currentTime, nil
+}
 
-	// Add mimeType to the fields to we can identify and skip directories.
-	r, err := driveService.Files.List().
+// syncFolderRecursively traverses a folder and its sub-folders to sync files.
+func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time) error {
+	query := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
+	err := srv.Files.List().
 		Context(ctx).
 		Q(query).
-		PageSize(100).
-		Fields("files(id, name, modifiedTime, sha256Checksum, mimeType)").
-		OrderBy("modifiedTime desc").
-		Do()
+		Fields("files(id, name, mimeType, modifiedTime, sha256Checksum)").
+		Pages(ctx, func(page *drive.FileList) error {
+			for _, file := range page.Files {
+				newLocalPath := filepath.Join(localPath, file.Name)
+
+				if file.MimeType == "application/vnd.google-apps.folder" {
+					fmt.Printf("Entering directory: %s\n", newLocalPath)
+					if err := os.MkdirAll(newLocalPath, 0755); err != nil {
+						log.Printf("Failed to create directory %s: %v", newLocalPath, err)
+						continue
+					}
+					// Recursively sync the sub-folder.
+					if err := syncFolderRecursively(ctx, srv, file.Id, newLocalPath, since); err != nil {
+						log.Printf("Failed to sync sub-folder %s: %v", file.Name, err)
+					}
+				} else {
+					// It's a file; check if it was modified since the last sync.
+					modTime, err := time.Parse(time.RFC3339, file.ModifiedTime)
+					if err != nil {
+						log.Printf("Could not parse modified time for %s: %v", file.Name, err)
+						continue
+					}
+
+					if since.IsZero() || modTime.After(since) {
+						downloadFile(srv, file, localPath) // Pass the parent directory path.
+					}
+				}
+			}
+			return nil
+		})
+
 	if err != nil {
-		return currentTime, fmt.Errorf("unable to retrieve files: %w", err)
+		return fmt.Errorf("could not list files for folder ID %s: %w", folderID, err)
 	}
-
-	if len(r.Files) == 0 {
-		fmt.Println("No new or updated files found.")
-		return currentTime, nil
-	}
-
-	fmt.Printf("Found %d item(s), checking for updates...\n", len(r.Files))
-	for _, file := range r.Files {
-		// --- FIX ---
-		// Check if the item is a directory and skip it if so.
-		if file.MimeType == "application/vnd.google-apps.folder" {
-			fmt.Printf("Skipping directory: %s\n", file.Name)
-			continue
-		}
-		downloadFile(driveService, file, downloadDir)
-	}
-	return currentTime, nil
+	return nil
 }
 
 // getFolderID finds a folder by name and returns its ID.
@@ -121,9 +134,41 @@ func getFolderID(ctx context.Context, srv *drive.Service, name string) (string, 
 	return r.Files[0].Id, nil
 }
 
-// downloadFile downloads a file from Drive if it doesn't exist locally or if the checksums differ.
-// Note: This function now requires the context to be passed.
+// downloadFile handles downloading/exporting a file from Drive.
 func downloadFile(srv *drive.Service, file *drive.File, dir string) {
+	if strings.HasPrefix(file.MimeType, "application/vnd.google-apps.") {
+		exportGoogleDoc(srv, file, dir)
+		return
+	}
+	downloadBinaryFile(srv, file, dir)
+}
+
+// exportGoogleDoc exports a Google Workspace file as a PDF.
+func exportGoogleDoc(srv *drive.Service, file *drive.File, dir string) {
+	localPath := filepath.Join(dir, file.Name+".pdf")
+	fmt.Printf("Exporting Google Doc '%s' to %s\n", file.Name, localPath)
+
+	resp, err := srv.Files.Export(file.Id, "application/pdf").Download()
+	if err != nil {
+		log.Printf("Error exporting file %s: %v", file.Name, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	outFile, err := os.Create(localPath)
+	if err != nil {
+		log.Printf("Error creating file %s: %v", localPath, err)
+		return
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, resp.Body); err != nil {
+		log.Printf("Error writing to file %s: %v", localPath, err)
+	}
+}
+
+// downloadBinaryFile downloads a regular file and checks its SHA256.
+func downloadBinaryFile(srv *drive.Service, file *drive.File, dir string) {
 	localPath := filepath.Join(dir, file.Name)
 
 	if _, err := os.Stat(localPath); err == nil {
@@ -131,7 +176,7 @@ func downloadFile(srv *drive.Service, file *drive.File, dir string) {
 		if err != nil {
 			log.Printf("Could not calculate SHA256 for %s: %v. Re-downloading...", file.Name, err)
 		} else if localSHA256 == file.Sha256Checksum {
-			fmt.Printf("File '%s' is already up to date. Skipping.\n", file.Name)
+			// File is already up to date.
 			return
 		}
 		fmt.Printf("File '%s' has changed. Downloading new version.\n", file.Name)
@@ -139,7 +184,6 @@ func downloadFile(srv *drive.Service, file *drive.File, dir string) {
 		fmt.Printf("File '%s' not found locally. Downloading.\n", file.Name)
 	}
 
-	// Pass the context to the download call.
 	resp, err := srv.Files.Get(file.Id).Download()
 	if err != nil {
 		log.Printf("Error downloading %s: %v", file.Name, err)
@@ -156,10 +200,7 @@ func downloadFile(srv *drive.Service, file *drive.File, dir string) {
 
 	if _, err := io.Copy(outFile, resp.Body); err != nil {
 		log.Printf("Error writing to file %s: %v", localPath, err)
-		return
 	}
-
-	fmt.Printf("Successfully downloaded and saved '%s' to %s\n", file.Name, localPath)
 }
 
 // calculateLocalSHA256 computes the SHA256 checksum of a local file.
