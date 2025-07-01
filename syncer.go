@@ -74,11 +74,12 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 
 	query := strings.Join(queryParts, " and ")
 
+	// Add mimeType to the fields to we can identify and skip directories.
 	r, err := driveService.Files.List().
 		Context(ctx).
 		Q(query).
 		PageSize(100).
-		Fields("files(id, name, modifiedTime, sha256Checksum)").
+		Fields("files(id, name, modifiedTime, sha256Checksum, mimeType)").
 		OrderBy("modifiedTime desc").
 		Do()
 	if err != nil {
@@ -90,8 +91,14 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 		return currentTime, nil
 	}
 
-	fmt.Printf("Found %d file(s), checking for updates...\n", len(r.Files))
+	fmt.Printf("Found %d item(s), checking for updates...\n", len(r.Files))
 	for _, file := range r.Files {
+		// --- FIX ---
+		// Check if the item is a directory and skip it if so.
+		if file.MimeType == "application/vnd.google-apps.folder" {
+			fmt.Printf("Skipping directory: %s\n", file.Name)
+			continue
+		}
 		downloadFile(driveService, file, downloadDir)
 	}
 	return currentTime, nil
@@ -115,6 +122,7 @@ func getFolderID(ctx context.Context, srv *drive.Service, name string) (string, 
 }
 
 // downloadFile downloads a file from Drive if it doesn't exist locally or if the checksums differ.
+// Note: This function now requires the context to be passed.
 func downloadFile(srv *drive.Service, file *drive.File, dir string) {
 	localPath := filepath.Join(dir, file.Name)
 
@@ -131,6 +139,7 @@ func downloadFile(srv *drive.Service, file *drive.File, dir string) {
 		fmt.Printf("File '%s' not found locally. Downloading.\n", file.Name)
 	}
 
+	// Pass the context to the download call.
 	resp, err := srv.Files.Get(file.Id).Download()
 	if err != nil {
 		log.Printf("Error downloading %s: %v", file.Name, err)
