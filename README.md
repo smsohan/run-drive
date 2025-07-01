@@ -100,7 +100,7 @@ The service will now be running in the cloud, securely authenticating with the a
 
 # Root URL returns the contents of the synced directory
 $ gcurl https://<>.run.app/
-["Gagi/","a","c"]
+["Gagi/","a","c"] # Note: directory names end with /
 
 # Pass the name of a directory to see it's contents
 $ gcurl https://run-drive-1000276527499.us-east1.run.app/Gagi
