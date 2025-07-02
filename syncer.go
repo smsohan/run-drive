@@ -77,18 +77,21 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 // syncFolderRecursively traverses a folder and its sub-folders to sync files.
 func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time) error {
 	query := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
+	fmt.Printf("Querying for files with query: %s\n", query)
+
 	err := srv.Files.List().
 		Context(ctx).
 		Q(query).
-		Fields("files(id, name, mimeType, createdTime, sha256Checksum)").
+		Fields("files(id, name, mimeType, createdTime, modifiedTime, sha256Checksum)").
 		Pages(ctx, func(page *drive.FileList) error {
+			fmt.Printf("Found %d files in folder '%s':%s.\n", len(page.Files), localPath, folderID)
 			for _, file := range page.Files {
-				fmt.Printf("Processing file: %s, created: %s\n", file.Name, file.CreatedTime)
+				fmt.Printf("Processing file: %s, created: %s, modified: %s\n", file.Name, file.CreatedTime, file.ModifiedTime)
 
 				newLocalPath := filepath.Join(localPath, file.Name)
 
 				if file.MimeType == "application/vnd.google-apps.folder" {
-					fmt.Printf("Entering directory: %s\n", newLocalPath)
+					fmt.Printf("Entering directory: %s, with id: %s\n", newLocalPath, file.Id)
 					if err := os.MkdirAll(newLocalPath, 0755); err != nil {
 						log.Printf("Failed to create directory %s: %v", newLocalPath, err)
 						continue
@@ -105,9 +108,17 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 						continue
 					}
 
-					if since.IsZero() || createTime.After(since) {
+					modifiedTime, err := time.Parse(time.RFC3339, file.ModifiedTime)
+					if err != nil {
+						log.Printf("Could not parse modified time for %s: %v", file.Name, err)
+						continue
+					}
+
+					// Check if the file was modified since the last sync.
+					if since.IsZero() || createTime.After(since) || modifiedTime.After(since) {
 						downloadFile(srv, file, localPath) // Pass the parent directory path.
 					}
+
 				}
 			}
 			return nil
