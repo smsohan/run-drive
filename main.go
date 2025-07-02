@@ -80,6 +80,8 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("Requested path: %s, isDir: %v\n", requestedPath, info.IsDir())
+
 	// If the path is a directory, list its contents.
 	if info.IsDir() {
 		listDirectory(w, safePath)
@@ -88,6 +90,7 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Otherwise, serve the file content.
 	http.ServeFile(w, r, safePath)
+
 }
 
 // listDirectory reads a directory and returns a JSON list of its contents.
@@ -99,7 +102,7 @@ func listDirectory(w http.ResponseWriter, dirPath string) {
 		return
 	}
 
-	var entries []string
+	var entries = make([]string, 0)
 	for _, file := range files {
 		entryName := file.Name()
 		if file.IsDir() {
@@ -110,6 +113,7 @@ func listDirectory(w http.ResponseWriter, dirPath string) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	log.Printf("Here: entries: %v\n", len(entries))
 	if err := json.NewEncoder(w).Encode(entries); err != nil {
 		log.Printf("Error encoding directory list to JSON: %v", err)
 	}
