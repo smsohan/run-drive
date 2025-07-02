@@ -27,7 +27,6 @@ func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKey
 
 	// --- Authentication Logic ---
 	if saKeyPath != "" {
-		// Option 1: Authenticate using the provided service account key file.
 		log.Printf("Authenticating using service account key file: %s", saKeyPath)
 		keyFileBytes, err := os.ReadFile(saKeyPath)
 		if err != nil {
@@ -42,7 +41,6 @@ func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKey
 			log.Fatalf("Unable to create Drive service with SA key: %v", err)
 		}
 	} else {
-		// Option 2: Fallback to Application Default Credentials.
 		log.Println("Authenticating using Application Default Credentials.")
 		client, err := google.DefaultClient(ctx, drive.DriveReadonlyScope)
 		if err != nil {
@@ -59,6 +57,9 @@ func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKey
 		lastSyncTime = time.Now().Add(-time.Duration(secondsAgo) * time.Second)
 	}
 
+	// shaCache stores the SHA256 checksums of local files to avoid recalculating them.
+	shaCache := make(map[string]string)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -66,7 +67,7 @@ func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKey
 			return
 		default:
 			fmt.Printf("\nStarting sync cycle...\n")
-			newSyncTime, err := performSync(ctx, driveService, folderName, lastSyncTime)
+			newSyncTime, err := performSync(ctx, driveService, folderName, lastSyncTime, shaCache)
 			if err != nil {
 				log.Printf("Sync cycle failed: %v. Retrying in %v.", err, syncInterval)
 			} else {
@@ -79,7 +80,7 @@ func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKey
 }
 
 // performSync starts the synchronization process, including pruning of deleted files.
-func performSync(ctx context.Context, driveService *drive.Service, folderName string, since time.Time) (time.Time, error) {
+func performSync(ctx context.Context, driveService *drive.Service, folderName string, since time.Time, shaCache map[string]string) (time.Time, error) {
 	currentTime := time.Now()
 
 	folderID, err := getFolderID(ctx, driveService, folderName)
@@ -87,18 +88,17 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 		return currentTime, fmt.Errorf("error finding folder: %w", err)
 	}
 
-	// This map will hold all the paths that exist on the remote.
 	remotePaths := make(map[string]bool)
-	remotePaths[downloadDir] = true // The root directory always exists.
+	remotePaths[downloadDir] = true
 
 	fmt.Printf("Starting recursive sync for folder '%s'...\n", folderName)
-	err = syncFolderRecursively(ctx, driveService, folderID, downloadDir, since, remotePaths)
+	err = syncFolderRecursively(ctx, driveService, folderID, downloadDir, since, remotePaths, shaCache)
 	if err != nil {
 		return currentTime, fmt.Errorf("recursive sync failed: %w", err)
 	}
 
 	fmt.Println("Sync complete. Pruning local files that were deleted on Drive...")
-	err = pruneLocalFiles(downloadDir, remotePaths)
+	err = pruneLocalFiles(downloadDir, remotePaths, shaCache)
 	if err != nil {
 		return currentTime, fmt.Errorf("failed to prune local files: %w", err)
 	}
@@ -107,36 +107,31 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 }
 
 // syncFolderRecursively traverses a folder and its sub-folders to sync files.
-func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time, remotePaths map[string]bool) error {
+func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time, remotePaths, shaCache map[string]bool) error {
 	query := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
-	fmt.Printf("Querying Drive with: %s\n", query)
-
-	err := srv.Files.List().
+	err = srv.Files.List().
 		Context(ctx).
 		Q(query).
 		Fields("files(id, name, mimeType, sha256Checksum)").
 		Pages(ctx, func(page *drive.FileList) error {
-			fmt.Printf("Found %d files in folder '%s'.\n", len(page.Files), localPath)
 			for _, file := range page.Files {
 				newLocalPath := filepath.Join(localPath, file.Name)
 
 				if file.MimeType == "application/vnd.google-apps.folder" {
-					remotePaths[newLocalPath] = true // Track the directory path.
+					remotePaths[newLocalPath] = true
 					if err := os.MkdirAll(newLocalPath, 0755); err != nil {
 						log.Printf("Failed to create directory %s: %v", newLocalPath, err)
 						continue
 					}
-					if err := syncFolderRecursively(ctx, srv, file.Id, newLocalPath, since, remotePaths); err != nil {
+								if err := syncFolderRecursively(ctx, srv, file.Id, newLocalPath, since, remotePaths, shaCache); err != nil {
 						log.Printf("Failed to sync sub-folder %s: %v", file.Name, err)
 					}
 				} else if strings.HasPrefix(file.MimeType, "application/vnd.google-apps.") {
-					// This is a Google Workspace file (Doc, Sheet, etc.). Skip it.
 					log.Printf("Skipping Google Workspace file: %s", file.Name)
 					continue
 				} else {
-					// This is a binary file.
-					remotePaths[newLocalPath] = true // Track the file path.
-					downloadFile(srv, file, localPath)
+					remotePaths[newLocalPath] = true
+					downloadFile(ctx, srv, file, localPath, shaCache)
 				}
 			}
 			return nil
@@ -145,7 +140,7 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 }
 
 // pruneLocalFiles walks the local directory and removes any files or folders not present in the remotePaths map.
-func pruneLocalFiles(localRoot string, remotePaths map[string]bool) error {
+func pruneLocalFiles(localRoot string, remotePaths map[string]bool, shaCache map[string]string) error {
 	var pathsToDelete []string
 	err := filepath.Walk(localRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -160,7 +155,6 @@ func pruneLocalFiles(localRoot string, remotePaths map[string]bool) error {
 		return err
 	}
 
-	// Sort paths by length in reverse order, so we delete children before parents.
 	sort.Slice(pathsToDelete, func(i, j int) bool {
 		return len(pathsToDelete[i]) > len(pathsToDelete[j])
 	})
@@ -169,6 +163,9 @@ func pruneLocalFiles(localRoot string, remotePaths map[string]bool) error {
 		fmt.Printf("Pruning deleted item: %s\n", path)
 		if err := os.Remove(path); err != nil {
 			log.Printf("Failed to prune path %s: %v", path, err)
+		} else {
+			// If the file is successfully removed, delete its checksum from the cache.
+			delete(shaCache, path)
 		}
 	}
 	return nil
@@ -192,14 +189,13 @@ func getFolderID(ctx context.Context, srv *drive.Service, name string) (string, 
 }
 
 // downloadFile downloads a binary file and checks its SHA256 to avoid re-downloading.
-func downloadFile(srv *drive.Service, file *drive.File, dir string) {
+func downloadFile(srv *drive.Service, file *drive.File, dir string, shaCache map[string]string) {
 	localPath := filepath.Join(dir, file.Name)
 
 	if _, err := os.Stat(localPath); err == nil {
-		localSHA256, err := calculateLocalSHA256(localPath)
-		if err != nil {
-			log.Printf("Could not calculate SHA256 for %s: %v. Re-downloading...", file.Name, err)
-		} else if localSHA256 == file.Sha256Checksum {
+		localSHA256, found := shaCache[localPath]
+
+		if found && localSHA256 == file.Sha256Checksum {
 			return // File is already up to date.
 		}
 		fmt.Printf("File '%s' has changed. Downloading new version.\n", file.Name)
@@ -223,7 +219,11 @@ func downloadFile(srv *drive.Service, file *drive.File, dir string) {
 
 	if _, err := io.Copy(outFile, resp.Body); err != nil {
 		log.Printf("Error writing to file %s: %v", localPath, err)
+		return
 	}
+
+	// After a successful download, update the cache with the new checksum.
+	shaCache[localPath] = file.Sha256Checksum
 }
 
 // calculateLocalSHA256 computes the SHA256 checksum of a local file.
