@@ -80,9 +80,11 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 	err := srv.Files.List().
 		Context(ctx).
 		Q(query).
-		Fields("files(id, name, mimeType, modifiedTime, sha256Checksum)").
+		Fields("files(id, name, mimeType, createdTime, sha256Checksum)").
 		Pages(ctx, func(page *drive.FileList) error {
 			for _, file := range page.Files {
+				fmt.Printf("Processing file: %s, created: %s\n", file.Name, file.CreatedTime)
+
 				newLocalPath := filepath.Join(localPath, file.Name)
 
 				if file.MimeType == "application/vnd.google-apps.folder" {
@@ -96,14 +98,14 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 						log.Printf("Failed to sync sub-folder %s: %v", file.Name, err)
 					}
 				} else {
-					// It's a file; check if it was modified since the last sync.
-					modTime, err := time.Parse(time.RFC3339, file.ModifiedTime)
+					// It's a file; check if it was created since the last sync.
+					createTime, err := time.Parse(time.RFC3339, file.CreatedTime)
 					if err != nil {
-						log.Printf("Could not parse modified time for %s: %v", file.Name, err)
+						log.Printf("Could not parse created time for %s: %v", file.Name, err)
 						continue
 					}
 
-					if since.IsZero() || modTime.After(since) {
+					if since.IsZero() || createTime.After(since) {
 						downloadFile(srv, file, localPath) // Pass the parent directory path.
 					}
 				}
