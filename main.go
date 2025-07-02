@@ -18,6 +18,7 @@ func main() {
 	// Define command-line flags
 	folderName := flag.String("folder-name", "agents", "Name of the folder to search within (required)")
 	secondsAgo := flag.Int("seconds-ago", 0, "On the first run, list files modified in the last N seconds. If 0, all files are synced.")
+	saKeyPath := flag.String("sa-key-path", "", "Path to the service account JSON key file (optional, overrides ADC)")
 	flag.Parse()
 
 	if *folderName == "" {
@@ -44,8 +45,8 @@ func main() {
 		log.Fatalf("Failed to create download directory: %v", err)
 	}
 
-	// Start the background file syncing process
-	go startSyncLoop(ctx, *folderName, *secondsAgo)
+	// Start the background file syncing process, passing the new key path argument.
+	go startSyncLoop(ctx, *folderName, *secondsAgo, *saKeyPath)
 
 	// Set up and start the HTTP server
 	http.HandleFunc("/", fileHandler)

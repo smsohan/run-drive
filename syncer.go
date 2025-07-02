@@ -22,15 +22,36 @@ const downloadDir = "/tmp/agents-state"
 const syncInterval = 30 * time.Second
 
 // startSyncLoop runs the file synchronization process in a continuous loop.
-func startSyncLoop(ctx context.Context, folderName string, secondsAgo int) {
-	client, err := google.DefaultClient(ctx, drive.DriveReadonlyScope)
-	if err != nil {
-		log.Fatalf("Unable to create Google Drive client: %v", err)
-	}
+func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKeyPath string) {
+	var driveService *drive.Service
 
-	driveService, err := drive.NewService(ctx, option.WithHTTPClient(client))
-	if err != nil {
-		log.Fatalf("Unable to retrieve Drive client: %v", err)
+	// --- Authentication Logic ---
+	if saKeyPath != "" {
+		// Option 1: Authenticate using the provided service account key file.
+		log.Printf("Authenticating using service account key file: %s", saKeyPath)
+		keyFileBytes, err := os.ReadFile(saKeyPath)
+		if err != nil {
+			log.Fatalf("Unable to read service account key file: %v", err)
+		}
+		creds, err := google.CredentialsFromJSON(ctx, keyFileBytes, drive.DriveReadonlyScope)
+		if err != nil {
+			log.Fatalf("Unable to create credentials from JSON key file: %v", err)
+		}
+		driveService, err = drive.NewService(ctx, option.WithCredentials(creds))
+		if err != nil {
+			log.Fatalf("Unable to create Drive service with SA key: %v", err)
+		}
+	} else {
+		// Option 2: Fallback to Application Default Credentials.
+		log.Println("Authenticating using Application Default Credentials.")
+		client, err := google.DefaultClient(ctx, drive.DriveReadonlyScope)
+		if err != nil {
+			log.Fatalf("Unable to create Google Drive client with ADC: %v", err)
+		}
+		driveService, err = drive.NewService(ctx, option.WithHTTPClient(client))
+		if err != nil {
+			log.Fatalf("Unable to create Drive service with ADC: %v", err)
+		}
 	}
 
 	var lastSyncTime time.Time
@@ -88,11 +109,14 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 // syncFolderRecursively traverses a folder and its sub-folders to sync files.
 func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time, remotePaths map[string]bool) error {
 	query := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
+	fmt.Printf("Querying Drive with: %s\n", query)
+
 	err := srv.Files.List().
 		Context(ctx).
 		Q(query).
-		Fields("files(id, name, mimeType, modifiedTime, sha256Checksum)").
+		Fields("files(id, name, mimeType, sha256Checksum)").
 		Pages(ctx, func(page *drive.FileList) error {
+			fmt.Printf("Found %d files in folder '%s'.\n", len(page.Files), localPath)
 			for _, file := range page.Files {
 				newLocalPath := filepath.Join(localPath, file.Name)
 
@@ -107,20 +131,12 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 					}
 				} else if strings.HasPrefix(file.MimeType, "application/vnd.google-apps.") {
 					// This is a Google Workspace file (Doc, Sheet, etc.). Skip it.
-					// By not adding it to remotePaths, any old exported .pdf will be pruned.
 					log.Printf("Skipping Google Workspace file: %s", file.Name)
 					continue
 				} else {
 					// This is a binary file.
 					remotePaths[newLocalPath] = true // Track the file path.
-					modTime, err := time.Parse(time.RFC3339, file.ModifiedTime)
-					if err != nil {
-						log.Printf("Could not parse modified time for %s: %v", file.Name, err)
-						continue
-					}
-					if since.IsZero() || modTime.After(since) {
-						downloadFile(srv, file, localPath)
-					}
+					downloadFile(srv, file, localPath)
 				}
 			}
 			return nil
