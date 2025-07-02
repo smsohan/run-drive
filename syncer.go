@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -107,9 +105,9 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 }
 
 // syncFolderRecursively traverses a folder and its sub-folders to sync files.
-func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time, remotePaths, shaCache map[string]bool) error {
+func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time, remotePaths map[string]bool, shaCache map[string]string) error {
 	query := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
-	err = srv.Files.List().
+	err := srv.Files.List().
 		Context(ctx).
 		Q(query).
 		Fields("files(id, name, mimeType, sha256Checksum)").
@@ -123,7 +121,7 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 						log.Printf("Failed to create directory %s: %v", newLocalPath, err)
 						continue
 					}
-								if err := syncFolderRecursively(ctx, srv, file.Id, newLocalPath, since, remotePaths, shaCache); err != nil {
+					if err := syncFolderRecursively(ctx, srv, file.Id, newLocalPath, since, remotePaths, shaCache); err != nil {
 						log.Printf("Failed to sync sub-folder %s: %v", file.Name, err)
 					}
 				} else if strings.HasPrefix(file.MimeType, "application/vnd.google-apps.") {
@@ -131,7 +129,7 @@ func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, lo
 					continue
 				} else {
 					remotePaths[newLocalPath] = true
-					downloadFile(ctx, srv, file, localPath, shaCache)
+					downloadFile(srv, file, localPath, shaCache)
 				}
 			}
 			return nil
@@ -224,19 +222,4 @@ func downloadFile(srv *drive.Service, file *drive.File, dir string, shaCache map
 
 	// After a successful download, update the cache with the new checksum.
 	shaCache[localPath] = file.Sha256Checksum
-}
-
-// calculateLocalSHA256 computes the SHA256 checksum of a local file.
-func calculateLocalSHA256(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
