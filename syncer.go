@@ -20,34 +20,17 @@ const downloadDir = "/tmp/agents-state"
 const syncInterval = 30 * time.Second
 
 // startSyncLoop runs the file synchronization process in a continuous loop.
-func startSyncLoop(ctx context.Context, folderName string, secondsAgo int, saKeyPath string) {
+func startSyncLoop(ctx context.Context, folderName string, secondsAgo int) {
 	var driveService *drive.Service
 
-	// --- Authentication Logic ---
-	if saKeyPath != "" {
-		log.Printf("Authenticating using service account key file: %s", saKeyPath)
-		keyFileBytes, err := os.ReadFile(saKeyPath)
-		if err != nil {
-			log.Fatalf("Unable to read service account key file: %v", err)
-		}
-		creds, err := google.CredentialsFromJSON(ctx, keyFileBytes, drive.DriveReadonlyScope)
-		if err != nil {
-			log.Fatalf("Unable to create credentials from JSON key file: %v", err)
-		}
-		driveService, err = drive.NewService(ctx, option.WithCredentials(creds))
-		if err != nil {
-			log.Fatalf("Unable to create Drive service with SA key: %v", err)
-		}
-	} else {
-		log.Println("Authenticating using Application Default Credentials.")
-		client, err := google.DefaultClient(ctx, drive.DriveReadonlyScope)
-		if err != nil {
-			log.Fatalf("Unable to create Google Drive client with ADC: %v", err)
-		}
-		driveService, err = drive.NewService(ctx, option.WithHTTPClient(client))
-		if err != nil {
-			log.Fatalf("Unable to create Drive service with ADC: %v", err)
-		}
+	log.Println("Authenticating using Application Default Credentials.")
+	client, err := google.DefaultClient(ctx, drive.DriveReadonlyScope)
+	if err != nil {
+		log.Fatalf("Unable to create Google Drive client with ADC: %v", err)
+	}
+	driveService, err = drive.NewService(ctx, option.WithHTTPClient(client))
+	if err != nil {
+		log.Fatalf("Unable to create Drive service with ADC: %v", err)
 	}
 
 	var lastSyncTime time.Time

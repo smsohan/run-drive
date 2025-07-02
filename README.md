@@ -110,3 +110,10 @@ $ gcurl https://run-drive-1000276527499.us-east1.run.app/Gagi
 $ gcurl https://run-drive-1000276527499.us-east1.run.app/Gagi/new-a
 a
 ```
+
+
+## Run locally using an exported key file
+
+```bash
+$ GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key-file.json go run .
+```
