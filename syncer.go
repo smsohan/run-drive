@@ -87,6 +87,7 @@ func performSync(ctx context.Context, driveService *drive.Service, folderName st
 	return currentTime, nil
 }
 
+// TODO: Make it download a few files concurrently instead of one after another, at least inside a folder
 // syncFolderRecursively traverses a folder and its sub-folders to sync files.
 func syncFolderRecursively(ctx context.Context, srv *drive.Service, folderID, localPath string, since time.Time, remotePaths map[string]bool, shaCache map[string]string) error {
 	query := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
