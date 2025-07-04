@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,13 +24,13 @@ func TestFileHandler(t *testing.T) {
 	defer func() { downloadDir = originalDownloadDir }()
 
 	// Create some dummy files and directories for testing.
-	if err := ioutil.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("hello"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("hello"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 	if err := os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755); err != nil {
 		t.Fatalf("Failed to create test subdir: %v", err)
 	}
-	if err := ioutil.WriteFile(filepath.Join(tmpDir, "subdir", "file2.txt"), []byte("world"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "subdir", "file2.txt"), []byte("world"), 0644); err != nil {
 		t.Fatalf("Failed to create test file in subdir: %v", err)
 	}
 
